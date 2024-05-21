@@ -1,8 +1,10 @@
 import {
   createReactComponentFromLit,
+  useConfirmModal,
   useLitPortalFactory,
 } from '@affine/component';
 import { useJournalInfoHelper } from '@affine/core/hooks/use-journal';
+import type { BlockSpec } from '@blocksuite/block-std';
 import {
   BiDirectionalLinkPanel,
   DocMetaTags,
@@ -22,11 +24,13 @@ import React, {
 } from 'react';
 
 import { PagePropertiesTable } from '../../affine/page-properties';
+import { AffinePageReference } from '../../affine/reference-link';
 import { BlocksuiteEditorJournalDocTitle } from './journal-doc-title';
 import {
+  patchNotificationService,
   patchReferenceRenderer,
   type ReferenceReactRenderer,
-} from './specs/custom/patch-reference-renderer';
+} from './specs/custom/spec-patchers';
 import { EdgelessModeSpecs } from './specs/edgeless';
 import { PageModeSpecs } from './specs/page';
 import * as styles from './styles.css';
@@ -56,14 +60,49 @@ const adapted = {
 
 interface BlocksuiteEditorProps {
   page: Doc;
-  referenceRenderer?: ReferenceReactRenderer;
-  // todo: add option to replace docTitle with custom component (e.g., for journal page)
 }
+
+const usePatchSpecs = (page: Doc, specs: BlockSpec[]) => {
+  const [reactToLit, portals] = useLitPortalFactory();
+  const referenceRenderer: ReferenceReactRenderer = useMemo(() => {
+    return function customReference(reference) {
+      const pageId = reference.delta.attributes?.reference?.pageId;
+      if (!pageId) return <span />;
+      return (
+        <AffinePageReference docCollection={page.collection} pageId={pageId} />
+      );
+    };
+  }, [page.collection]);
+
+  const confirmModal = useConfirmModal();
+  const patchedSpecs = useMemo(() => {
+    let patched = patchReferenceRenderer(specs, reactToLit, referenceRenderer);
+    patched = patchNotificationService(
+      patchReferenceRenderer(patched, reactToLit, referenceRenderer),
+      confirmModal
+    );
+    return patched;
+  }, [confirmModal, reactToLit, referenceRenderer, specs]);
+
+  return [
+    patchedSpecs,
+    useMemo(
+      () => (
+        <>
+          {portals.map(p => (
+            <Fragment key={p.id}>{p.portal}</Fragment>
+          ))}
+        </>
+      ),
+      [portals]
+    ),
+  ] as const;
+};
 
 export const BlocksuiteDocEditor = forwardRef<
   PageEditor,
   BlocksuiteEditorProps
->(function BlocksuiteDocEditor({ page, referenceRenderer }, ref) {
+>(function BlocksuiteDocEditor({ page }, ref) {
   const titleRef = useRef<DocTitle>(null);
   const docRef = useRef<PageEditor | null>(null);
   const [docPage, setDocPage] =
@@ -84,13 +123,6 @@ export const BlocksuiteDocEditor = forwardRef<
     [ref]
   );
 
-  const [reactToLit, portals] = useLitPortalFactory();
-
-  const specs = useMemo(() => {
-    if (!referenceRenderer) return PageModeSpecs;
-    return patchReferenceRenderer(PageModeSpecs, reactToLit, referenceRenderer);
-  }, [reactToLit, referenceRenderer]);
-
   useEffect(() => {
     // auto focus the title
     setTimeout(() => {
@@ -106,6 +138,8 @@ export const BlocksuiteDocEditor = forwardRef<
       }
     });
   }, []);
+
+  const [specs, portals] = usePatchSpecs(page, PageModeSpecs);
 
   return (
     <>
@@ -135,32 +169,19 @@ export const BlocksuiteDocEditor = forwardRef<
           <adapted.BiDirectionalLinkPanel doc={page} pageRoot={docPage} />
         ) : null}
       </div>
-      {portals.map(p => (
-        <Fragment key={p.id}>{p.portal}</Fragment>
-      ))}
+      {portals}
     </>
   );
 });
-
 export const BlocksuiteEdgelessEditor = forwardRef<
   EdgelessEditor,
   BlocksuiteEditorProps
->(function BlocksuiteEdgelessEditor({ page, referenceRenderer }, ref) {
-  const [reactToLit, portals] = useLitPortalFactory();
-  const specs = useMemo(() => {
-    if (!referenceRenderer) return EdgelessModeSpecs;
-    return patchReferenceRenderer(
-      EdgelessModeSpecs,
-      reactToLit,
-      referenceRenderer
-    );
-  }, [reactToLit, referenceRenderer]);
+>(function BlocksuiteEdgelessEditor({ page }, ref) {
+  const [specs, portals] = usePatchSpecs(page, EdgelessModeSpecs);
   return (
     <>
       <adapted.EdgelessEditor ref={ref} doc={page} specs={specs} />
-      {portals.map(p => (
-        <Fragment key={p.id}>{p.portal}</Fragment>
-      ))}
+      {portals}
     </>
   );
 });
