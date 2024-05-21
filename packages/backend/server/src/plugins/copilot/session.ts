@@ -456,8 +456,12 @@ export class ChatSessionService {
       );
   }
 
+  async isCopilotUser(userId: string) {
+    return await this.feature.isCopilotUser(userId);
+  }
+
   async getQuota(userId: string) {
-    const isCopilotUser = await this.feature.isCopilotUser(userId);
+    const isCopilotUser = await this.isCopilotUser(userId);
 
     let limit: number | undefined;
     if (!isCopilotUser) {
@@ -492,6 +496,56 @@ export class ChatSessionService {
       sessionId,
       prompt,
       messages: [],
+    });
+  }
+
+  async cleanup(
+    options: Omit<ChatSessionOptions, 'promptName'> & { sessionIds: string[] }
+  ) {
+    return await this.db.$transaction(async tx => {
+      const ret = { success: 0, failed: 0 };
+      const { actions, chats } = Object.groupBy(
+        await tx.aiSession
+          .findMany({
+            where: {
+              id: { in: options.sessionIds },
+              userId: options.userId,
+              workspaceId: options.workspaceId,
+              docId: options.docId,
+            },
+            select: { id: true, prompt: { select: { action: true } } },
+          })
+          .then(sessions =>
+            sessions.map(({ id, prompt: { action } }) => ({
+              id,
+              action: action ? 'action' : 'chat',
+            }))
+          ),
+        ({ action }) => action
+      );
+
+      // TODO: prisma not support returning syntax in deleteMany
+      // https://github.com/prisma/prisma/issues/13596
+      // we can't mark which session has been deleted, so just return the count
+      if (actions) {
+        // delete action session directly
+        ret.success += await tx.aiSessionMessage
+          .deleteMany({
+            where: { sessionId: { in: actions.map(({ id }) => id) } },
+          })
+          .then(r => r.count);
+      }
+      if (chats) {
+        // cleanup chat session's message only
+        ret.success += await tx.aiSessionMessage
+          .deleteMany({
+            where: { sessionId: { in: chats.map(({ id }) => id) } },
+          })
+          .then(r => r.count);
+      }
+      ret.failed = options.sessionIds.length - ret.success;
+
+      return ret;
     });
   }
 

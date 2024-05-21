@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 
-import { BadRequestException, Logger } from '@nestjs/common';
+import { BadRequestException, Logger, NotFoundException } from '@nestjs/common';
 import {
   Args,
   Field,
@@ -22,6 +22,7 @@ import { PermissionService } from '../../core/workspaces/permission';
 import {
   FileUpload,
   MutexService,
+  PaymentRequiredException,
   Throttle,
   TooManyRequestsException,
 } from '../../fundamentals';
@@ -53,6 +54,18 @@ class CreateChatSessionInput {
     description: 'The prompt name to use for the session',
   })
   promptName!: string;
+}
+
+@InputType()
+class DeleteSessionInput {
+  @Field(() => String)
+  workspaceId!: string;
+
+  @Field(() => String)
+  docId!: string;
+
+  @Field(() => [String])
+  sessionIds!: string[];
 }
 
 @InputType()
@@ -262,6 +275,41 @@ export class CopilotResolver {
       userId: user.id,
     });
     return session;
+  }
+
+  @Mutation(() => String, {
+    description: 'Cleanup sessions',
+  })
+  async cleanupCopilotSession(
+    @CurrentUser() user: CurrentUser,
+    @Args({ name: 'options', type: () => DeleteSessionInput })
+    options: DeleteSessionInput
+  ) {
+    await this.permissions.checkCloudPagePermission(
+      options.workspaceId,
+      options.docId,
+      user.id
+    );
+    if (!options.sessionIds.length) {
+      return new NotFoundException('Session not found');
+    }
+    const lockFlag = `${COPILOT_LOCKER}:session:${user.id}:${options.workspaceId}`;
+    await using lock = await this.mutex.lock(lockFlag);
+    if (!lock) {
+      return new TooManyRequestsException('Server is busy');
+    }
+
+    if (!(await this.chatSession.isCopilotUser(user.id))) {
+      return new PaymentRequiredException(
+        `This feature is only available for ai plan users, please upgrade your plan.`
+      );
+    }
+
+    const ret = await this.chatSession.cleanup({
+      ...options,
+      userId: user.id,
+    });
+    return ret;
   }
 
   @Mutation(() => String, {
