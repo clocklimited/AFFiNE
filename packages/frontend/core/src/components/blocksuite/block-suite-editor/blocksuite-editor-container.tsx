@@ -253,12 +253,12 @@ export const BlocksuiteEditorContainer = forwardRef<
     locationHash,
   ]);
 
+  const disposable = useRef<DisposableGroup | null>(null);
+
   useEffect(() => {
     if (locationHash && !scrolled) {
       return;
     }
-
-    const group = new DisposableGroup();
 
     // Function to handle block selection change
     const handleSelectionChange = (selection: BaseSelection[]) => {
@@ -285,12 +285,21 @@ export const BlocksuiteEditorContainer = forwardRef<
         const selectManager = affineEditorContainerProxy.host?.selection;
         if (!selectManager) return;
 
+        if (disposable.current) return;
+        disposable.current = new DisposableGroup();
+
         // Set up the new disposable listener
-        group.add(selectManager.slots.changed.on(handleSelectionChange));
+        disposable.current.add(
+          selectManager.slots.changed.on(handleSelectionChange)
+        );
       })
       .catch(console.error);
+
     return () => {
-      group.dispose();
+      if (disposable.current) {
+        disposable.current?.dispose();
+        disposable.current = null;
+      }
     };
   }, [
     affineEditorContainerProxy,
