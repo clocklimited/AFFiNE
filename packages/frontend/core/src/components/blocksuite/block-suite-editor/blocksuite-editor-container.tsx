@@ -1,6 +1,6 @@
 import { ViewService } from '@affine/core/modules/workbench/services/view';
 import type { BaseSelection, BlockElement } from '@blocksuite/block-std';
-import { DisposableGroup } from '@blocksuite/global/utils';
+import type { Disposable } from '@blocksuite/global/utils';
 import type {
   AffineEditorContainer,
   EdgelessEditor,
@@ -8,11 +8,7 @@ import type {
 } from '@blocksuite/presets';
 import type { Doc } from '@blocksuite/store';
 import { Slot } from '@blocksuite/store';
-import {
-  type DocMode,
-  useLiveData,
-  useServiceOptional,
-} from '@toeverything/infra';
+import { type DocMode, useServiceOptional } from '@toeverything/infra';
 import clsx from 'clsx';
 import type React from 'react';
 import type { RefObject } from 'react';
@@ -107,10 +103,11 @@ export const BlocksuiteEditorContainer = forwardRef<
   { page, mode, className, style, defaultSelectedBlockId, referenceRenderer },
   ref
 ) {
-  const [scrolled, setScrolled] = useState(false);
+  const scrolledRef = useRef(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const docRef = useRef<PageEditor>(null);
   const edgelessRef = useRef<EdgelessEditor>(null);
+  const renderStartRef = useRef<number>(Date.now());
 
   const slots: BlocksuiteEditorContainerRef['slots'] = useMemo(() => {
     return {
@@ -214,18 +211,17 @@ export const BlocksuiteEditorContainer = forwardRef<
 
   const blockElement = useBlockElementById(rootRef, defaultSelectedBlockId);
   const currentView = useServiceOptional(ViewService)?.view;
-  const viewLocation = useLiveData(currentView?.location$);
-  const currentPath = viewLocation?.pathname;
-  const locationHash = viewLocation?.hash;
 
   useEffect(() => {
+    let canceled = false;
     const handleScrollToBlock = (blockElement: BlockElement) => {
-      if (mode === 'page') {
-        blockElement.scrollIntoView({
-          behavior: 'smooth',
-          block: 'center',
-        });
+      if (!mode || !blockElement) {
+        return;
       }
+      blockElement.scrollIntoView({
+        behavior: 'smooth',
+        block: 'center',
+      });
       const selectManager = affineEditorContainerProxy.host?.selection;
       if (!blockElement.path.length || !selectManager) {
         return;
@@ -235,34 +231,33 @@ export const BlocksuiteEditorContainer = forwardRef<
       });
       selectManager.set([newSelection]);
     };
-
     affineEditorContainerProxy.updateComplete
       .then(() => {
-        if (blockElement && !scrolled) {
+        if (blockElement && !scrolledRef.current && !canceled) {
           handleScrollToBlock(blockElement);
-          setScrolled(true);
+          scrolledRef.current = true;
         }
       })
       .catch(console.error);
-  }, [
-    blockElement,
-    affineEditorContainerProxy,
-    mode,
-    scrolled,
-    currentPath,
-    locationHash,
-  ]);
-
-  const disposable = useRef<DisposableGroup | null>(null);
+    return () => {
+      canceled = true;
+    };
+  }, [blockElement, affineEditorContainerProxy, mode]);
 
   useEffect(() => {
-    if (locationHash && !scrolled) {
-      return;
-    }
-
+    let disposable: Disposable | null = null;
+    let canceled = false;
     // Function to handle block selection change
     const handleSelectionChange = (selection: BaseSelection[]) => {
-      if (!currentView || !currentPath) {
+      const viewLocation = currentView?.location$.value;
+      const currentPath = viewLocation?.pathname;
+      const locationHash = viewLocation?.hash;
+      if (
+        !currentView ||
+        !currentPath ||
+        // do not update the hash during the initial render
+        renderStartRef.current > Date.now() - 1000
+      ) {
         return;
       }
       if (selection[0]?.type !== 'block') {
@@ -275,7 +270,7 @@ export const BlocksuiteEditorContainer = forwardRef<
       }
       const newHash = `#${selectedId}`;
 
-      // // Only update the hash if it has changed
+      // Only update the hash if it has changed
       if (locationHash !== newHash) {
         currentView.history.replace(currentPath + newHash);
       }
@@ -283,31 +278,17 @@ export const BlocksuiteEditorContainer = forwardRef<
     affineEditorContainerProxy.updateComplete
       .then(() => {
         const selectManager = affineEditorContainerProxy.host?.selection;
-        if (!selectManager) return;
-
-        if (disposable.current) return;
-        disposable.current = new DisposableGroup();
-
+        if (!selectManager || canceled) return;
         // Set up the new disposable listener
-        disposable.current.add(
-          selectManager.slots.changed.on(handleSelectionChange)
-        );
+        disposable = selectManager.slots.changed.on(handleSelectionChange);
       })
       .catch(console.error);
 
     return () => {
-      if (disposable.current) {
-        disposable.current?.dispose();
-        disposable.current = null;
-      }
+      canceled = true;
+      disposable?.dispose();
     };
-  }, [
-    affineEditorContainerProxy,
-    currentPath,
-    currentView,
-    locationHash,
-    scrolled,
-  ]);
+  }, [affineEditorContainerProxy, currentView]);
 
   return (
     <div
