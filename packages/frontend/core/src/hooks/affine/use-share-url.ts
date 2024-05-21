@@ -1,4 +1,4 @@
-import { toast } from '@affine/component';
+import { notify } from '@affine/component';
 import { getAffineCloudBaseUrl } from '@affine/core/modules/cloud/services/fetch';
 import { WorkbenchService } from '@affine/core/modules/workbench';
 import { mixpanel } from '@affine/core/utils';
@@ -55,7 +55,9 @@ export const useSharingUrl = ({
       navigator.clipboard
         .writeText(sharingUrl)
         .then(() => {
-          toast(t['Copied link to clipboard']());
+          notify.success({
+            title: t['Copied link to clipboard'](),
+          });
         })
         .catch(err => {
           console.error(err);
@@ -65,7 +67,9 @@ export const useSharingUrl = ({
         type: 'link',
       });
     } else {
-      toast('Network not available');
+      notify.error({
+        title: 'Network not available',
+      });
     }
   }, [sharingUrl, t, urlType]);
 
