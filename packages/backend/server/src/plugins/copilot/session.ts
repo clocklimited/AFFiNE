@@ -339,18 +339,14 @@ export class ChatSessionService {
       .reduce((total, length) => total + length, 0);
   }
 
-  private async countUserActions(userId: string): Promise<number> {
-    return await this.db.aiSession.count({
-      where: { userId, prompt: { action: { not: null } } },
+  private async countUserMessages(userId: string): Promise<number> {
+    const sessions = await this.db.aiSession.findMany({
+      where: { userId },
+      select: { messageCost: true, prompt: { select: { action: true } } },
     });
-  }
-
-  private async countUserChats(userId: string): Promise<number> {
-    const chats = await this.db.aiSession.findMany({
-      where: { userId, prompt: { action: null } },
-      select: { messageCost: true },
-    });
-    return chats.reduce((prev, chat) => prev + chat.messageCost, 0);
+    return sessions
+      .map(({ messageCost, prompt: { action } }) => (action ? 1 : messageCost))
+      .reduce((prev, cost) => prev + cost, 0);
   }
 
   async listSessions(
@@ -479,10 +475,9 @@ export class ChatSessionService {
       limit = quota.feature.copilotActionLimit;
     }
 
-    const actions = await this.countUserActions(userId);
-    const chats = await this.countUserChats(userId);
+    const used = await this.countUserMessages(userId);
 
-    return { limit, used: actions + chats };
+    return { limit, used };
   }
 
   async checkQuota(userId: string) {
