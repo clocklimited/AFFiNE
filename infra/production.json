@@ -1,0 +1,122 @@
+{
+  "apiVersion": "v1.1",
+  "spec": {
+    "kind": "Workflow",
+    "spec": {
+      "type": "sequential",
+      "steps": [
+        {
+          "kind": "Project",
+          "ref": "project",
+          "spec": {
+            "name": "AFFiNE",
+            "color": "#6F2DBD",
+            "region": "europe-west"
+          }
+        },
+        {
+          "kind": "Workflow",
+          "spec": {
+            "type": "sequential",
+            "context": {
+              "projectId": "${refs.project.id}"
+            },
+            "steps": [
+              {
+                "kind": "Addon",
+                "spec": {
+                  "tlsEnabled": true,
+                  "billing": {
+                    "replicas": 1,
+                    "storage": 4096,
+                    "storageClass": "ssd",
+                    "deploymentPlan": "nf-compute-50"
+                  },
+                  "typeSpecificSettings": {
+                    "postgresqlConnectionPoolerReplicas": 2,
+                    "postgresqlReadConnectionPoolerReplicas": 2
+                  },
+                  "type": "postgresql",
+                  "name": "postgres-production",
+                  "version": "15",
+                  "externalAccessEnabled": false,
+                  "ipPolicies": [],
+                  "pitrEnabled": false
+                }
+              },
+              {
+                "kind": "SecretGroup",
+                "spec": {
+                  "type": "secret",
+                  "secretType": "environment-arguments",
+                  "priority": 10,
+                  "secrets": {
+                    "variables": {},
+                    "files": {}
+                  },
+                  "addonDependencies": [],
+                  "name": "secret-production",
+                  "restrictions": {
+                    "restricted": false,
+                    "nfObjects": [],
+                    "tags": []
+                  }
+                }
+              },
+              {
+                "kind": "CombinedService",
+                "spec": {
+                  "deployment": {
+                    "instances": 1,
+                    "storage": {
+                      "ephemeralStorage": {
+                        "storageSize": 1024
+                      },
+                      "shmSize": 64
+                    },
+                    "docker": {
+                      "configType": "default"
+                    }
+                  },
+                  "runtimeEnvironment": {},
+                  "runtimeFiles": {},
+                  "buildArguments": {},
+                  "buildFiles": {},
+                  "billing": {
+                    "deploymentPlan": "nf-compute-10",
+                    "buildPlan": "nf-compute-400-16"
+                  },
+                  "name": "app-production",
+                  "vcsData": {
+                    "projectType": "github",
+                    "vcsLinkId": "632a351858aa85519c33dd00",
+                    "projectUrl": "https://github.com/clocklimited/AFFiNE",
+                    "projectBranch": "clock-stable"
+                  },
+                  "ports": [],
+                  "buildSettings": {
+                    "dockerfile": {
+                      "buildEngine": "kaniko",
+                      "useCache": true,
+                      "dockerWorkDir": "/",
+                      "dockerFilePath": "/Dockerfile"
+                    }
+                  },
+                  "disabledCI": false,
+                  "buildConfiguration": {
+                    "pathIgnoreRules": [],
+                    "isAllowList": false,
+                    "ciIgnoreFlagsEnabled": false
+                  }
+                }
+              }
+            ]
+          }
+        }
+      ]
+    }
+  },
+  "name": "affine-production",
+  "description": "Clock usage",
+  "$schema": "https://api.northflank.com/v1/schemas/template"
+}
