@@ -186,7 +186,7 @@ export class ChatSessionService {
 
       // find existing session if session is chat session
       if (!state.prompt.action) {
-        const { id } =
+        const { id, deletedAt } =
           (await tx.aiSession.findFirst({
             where: {
               userId: state.userId,
@@ -194,8 +194,9 @@ export class ChatSessionService {
               docId: state.docId,
               prompt: { action: { equals: null } },
             },
-            select: { id: true },
+            select: { id: true, deletedAt: true },
           })) || {};
+        if (deletedAt) throw new Error(`Session is deleted: ${id}`);
         if (id) sessionId = id;
       }
 
@@ -218,6 +219,18 @@ export class ChatSessionService {
               params: m.params || undefined,
               sessionId,
             })),
+          });
+          await tx.aiSession.update({
+            where: { id: sessionId },
+            data: {
+              messageCost: { increment: state.messages.length },
+              tokenCost: {
+                increment: this.calculateTokenSize(
+                  state.messages,
+                  state.prompt.model as AvailableModel
+                ),
+              },
+            },
           });
         }
       } else {
@@ -242,21 +255,15 @@ export class ChatSessionService {
   ): Promise<ChatSessionState | undefined> {
     return await this.db.aiSession
       .findUnique({
-        where: { id: sessionId },
+        where: { id: sessionId, deletedAt: null },
         select: {
           id: true,
           userId: true,
           workspaceId: true,
           docId: true,
           messages: {
-            select: {
-              role: true,
-              content: true,
-              createdAt: true,
-            },
-            orderBy: {
-              createdAt: 'asc',
-            },
+            select: { role: true, content: true, createdAt: true },
+            orderBy: { createdAt: 'asc' },
           },
           prompt: {
             select: {
@@ -264,14 +271,8 @@ export class ChatSessionService {
               action: true,
               model: true,
               messages: {
-                select: {
-                  role: true,
-                  content: true,
-                  createdAt: true,
-                },
-                orderBy: {
-                  idx: 'asc',
-                },
+                select: { role: true, content: true, createdAt: true },
+                orderBy: { idx: 'asc' },
               },
             },
           },
@@ -297,9 +298,18 @@ export class ChatSessionService {
   // after revert, we can retry the action
   async revertLatestMessage(sessionId: string) {
     await this.db.$transaction(async tx => {
+      const id = await tx.aiSession
+        .findUnique({
+          where: { id: sessionId, deletedAt: null },
+          select: { id: true },
+        })
+        .then(session => session?.id);
+      if (!id) {
+        throw new Error(`Session not found: ${sessionId}`);
+      }
       const ids = await tx.aiSessionMessage
         .findMany({
-          where: { sessionId },
+          where: { sessionId: id },
           select: { id: true, role: true },
           orderBy: { createdAt: 'asc' },
         })
@@ -328,13 +338,13 @@ export class ChatSessionService {
 
   private async countUserActions(userId: string): Promise<number> {
     return await this.db.aiSession.count({
-      where: { userId, prompt: { action: { not: null } } },
+      where: { userId, prompt: { action: { not: null } }, deletedAt: null },
     });
   }
 
   private async countUserChats(userId: string): Promise<number> {
     const chats = await this.db.aiSession.findMany({
-      where: { userId, prompt: { action: null } },
+      where: { userId, prompt: { action: null }, deletedAt: null },
       select: {
         _count: {
           select: { messages: { where: { role: AiPromptRole.user } } },
@@ -358,6 +368,7 @@ export class ChatSessionService {
           prompt: {
             action: options?.action ? { not: null } : null,
           },
+          deletedAt: null,
         },
         select: { id: true },
       })
@@ -381,10 +392,12 @@ export class ChatSessionService {
             action: options?.action ? { not: null } : null,
           },
           id: options?.sessionId ? { equals: options.sessionId } : undefined,
+          deletedAt: null,
         },
         select: {
           id: true,
           promptName: true,
+          tokenCost: true,
           createdAt: true,
           messages: {
             select: {
@@ -405,50 +418,48 @@ export class ChatSessionService {
       })
       .then(sessions =>
         Promise.all(
-          sessions.map(async ({ id, promptName, messages, createdAt }) => {
-            try {
-              const ret = ChatMessageSchema.array().safeParse(messages);
-              if (ret.success) {
-                const prompt = await this.prompt.get(promptName);
-                if (!prompt) {
-                  throw new Error(`Prompt not found: ${promptName}`);
-                }
-                const tokens = this.calculateTokenSize(
-                  ret.data,
-                  prompt.model as AvailableModel
-                );
+          sessions.map(
+            async ({ id, promptName, tokenCost, messages, createdAt }) => {
+              try {
+                const ret = ChatMessageSchema.array().safeParse(messages);
+                if (ret.success) {
+                  const prompt = await this.prompt.get(promptName);
+                  if (!prompt) {
+                    throw new Error(`Prompt not found: ${promptName}`);
+                  }
 
-                // render system prompt
-                const preload = withPrompt
-                  ? prompt
-                      .finish(ret.data[0]?.params || {}, id)
-                      .filter(({ role }) => role !== 'system')
-                  : [];
+                  // render system prompt
+                  const preload = withPrompt
+                    ? prompt
+                        .finish(ret.data[0]?.params || {}, id)
+                        .filter(({ role }) => role !== 'system')
+                    : [];
 
-                // `createdAt` is required for history sorting in frontend, let's fake the creating time of prompt messages
-                (preload as ChatMessage[]).forEach((msg, i) => {
-                  msg.createdAt = new Date(
-                    createdAt.getTime() - preload.length - i - 1
+                  // `createdAt` is required for history sorting in frontend, let's fake the creating time of prompt messages
+                  (preload as ChatMessage[]).forEach((msg, i) => {
+                    msg.createdAt = new Date(
+                      createdAt.getTime() - preload.length - i - 1
+                    );
+                  });
+
+                  return {
+                    sessionId: id,
+                    action: prompt.action || undefined,
+                    tokens: tokenCost,
+                    createdAt,
+                    messages: preload.concat(ret.data),
+                  };
+                } else {
+                  this.logger.error(
+                    `Unexpected message schema: ${JSON.stringify(ret.error)}`
                   );
-                });
-
-                return {
-                  sessionId: id,
-                  action: prompt.action || undefined,
-                  tokens,
-                  createdAt,
-                  messages: preload.concat(ret.data),
-                };
-              } else {
-                this.logger.error(
-                  `Unexpected message schema: ${JSON.stringify(ret.error)}`
-                );
+                }
+              } catch (e) {
+                this.logger.error('Unexpected error in listHistories', e);
               }
-            } catch (e) {
-              this.logger.error('Unexpected error in listHistories', e);
+              return undefined;
             }
-            return undefined;
-          })
+          )
         )
       )
       .then(histories =>
@@ -503,49 +514,26 @@ export class ChatSessionService {
     options: Omit<ChatSessionOptions, 'promptName'> & { sessionIds: string[] }
   ) {
     return await this.db.$transaction(async tx => {
-      const ret = { success: 0, failed: 0 };
-      const { actions, chats } = Object.groupBy(
-        await tx.aiSession
-          .findMany({
-            where: {
-              id: { in: options.sessionIds },
-              userId: options.userId,
-              workspaceId: options.workspaceId,
-              docId: options.docId,
-            },
-            select: { id: true, prompt: { select: { action: true } } },
-          })
-          .then(sessions =>
-            sessions.map(({ id, prompt: { action } }) => ({
-              id,
-              action: action ? 'action' : 'chat',
-            }))
-          ),
-        ({ action }) => action
-      );
+      const sessions = await tx.aiSession
+        .findMany({
+          where: {
+            id: { in: options.sessionIds },
+            userId: options.userId,
+            workspaceId: options.workspaceId,
+            docId: options.docId,
+            deletedAt: null,
+          },
+          select: { id: true },
+        })
+        .then(sessions => sessions.map(({ id }) => id));
 
-      // TODO: prisma not support returning syntax in deleteMany
-      // https://github.com/prisma/prisma/issues/13596
-      // we can't mark which session has been deleted, so just return the count
-      if (actions) {
-        // delete action session directly
-        ret.success += await tx.aiSessionMessage
-          .deleteMany({
-            where: { sessionId: { in: actions.map(({ id }) => id) } },
-          })
-          .then(r => r.count);
-      }
-      if (chats) {
-        // cleanup chat session's message only
-        ret.success += await tx.aiSessionMessage
-          .deleteMany({
-            where: { sessionId: { in: chats.map(({ id }) => id) } },
-          })
-          .then(r => r.count);
-      }
-      ret.failed = options.sessionIds.length - ret.success;
-
-      return ret;
+      await tx.aiSessionMessage.deleteMany({
+        where: { sessionId: { in: sessions } },
+      });
+      await tx.aiSession.updateMany({
+        where: { id: { in: sessions } },
+        data: { deletedAt: new Date() },
+      });
     });
   }
 
