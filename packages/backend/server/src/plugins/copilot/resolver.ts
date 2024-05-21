@@ -22,7 +22,6 @@ import { PermissionService } from '../../core/workspaces/permission';
 import {
   FileUpload,
   MutexService,
-  PaymentRequiredException,
   Throttle,
   TooManyRequestsException,
 } from '../../fundamentals';
@@ -297,12 +296,6 @@ export class CopilotResolver {
     await using lock = await this.mutex.lock(lockFlag);
     if (!lock) {
       return new TooManyRequestsException('Server is busy');
-    }
-
-    if (!(await this.chatSession.isCopilotUser(user.id))) {
-      return new PaymentRequiredException(
-        `This feature is only available for ai plan users, please upgrade your plan.`
-      );
     }
 
     const ret = await this.chatSession.cleanup({

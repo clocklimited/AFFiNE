@@ -462,12 +462,8 @@ export class ChatSessionService {
       );
   }
 
-  async isCopilotUser(userId: string) {
-    return await this.feature.isCopilotUser(userId);
-  }
-
   async getQuota(userId: string) {
-    const isCopilotUser = await this.isCopilotUser(userId);
+    const isCopilotUser = await this.feature.isCopilotUser(userId);
 
     let limit: number | undefined;
     if (!isCopilotUser) {
